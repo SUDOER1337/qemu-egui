@@ -1,7 +1,7 @@
 # QEMU GUI — Agent Notes
 
 ## Project
-A minimal egui wrapper around QEMU for personal use (runs from USB drive on Windows/GNU target).
+A minimal egui wrapper around QEMU — runs on Linux and Windows (runs from USB drive on Windows/GNU target).
 
 ## Stack
 - Rust edition 2021, `stable-x86_64-pc-windows-gnu` toolchain

@@ -1,5 +1,3 @@
-set shell := ["powershell.exe", "-NoProfile", "-Command"]
-
 check:
     cargo check
 

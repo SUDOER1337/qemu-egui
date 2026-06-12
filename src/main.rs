@@ -55,7 +55,7 @@ str_enum! {
     enum OnOff { On = "on", Off = "off" }
 }
 str_enum! {
-    enum AccelKind { Whpx = "whpx", Tcg = "tcg", Hax = "hax" }
+    enum AccelKind { Kvm = "kvm", Whpx = "whpx", Tcg = "tcg", Hax = "hax" }
 }
 str_enum! {
     enum IrqChip { Off = "off", Split = "split", On = "on" }
@@ -70,7 +70,7 @@ str_enum! {
     enum NetBackend { User = "user", Tap = "tap" }
 }
 str_enum! {
-    enum AudioDev { Disabled = "none", Dsound = "dsound" }
+    enum AudioDev { Disabled = "none", Pa = "pa", Alsa = "alsa", Dsound = "dsound" }
 }
 str_enum! {
     enum SoundHw { Disabled = "none", IntelHda = "intel-hda", Ac97 = "ac97", Sb16 = "sb16", Es1370 = "es1370" }
@@ -137,14 +137,29 @@ struct Config {
     watchdog_action: WatchdogAction,
     mem_slots: u32,
     mem_maxmb: u32,
+    monitor_width: u32,
+    monitor_height: u32,
 }
 
 impl Default for Config {
     fn default() -> Self {
+        let (qemu_path, accel, audio_dev) = if cfg!(target_os = "linux") {
+            (
+                "/usr/bin/qemu-system-x86_64".into(),
+                AccelKind::Kvm,
+                AudioDev::Pa,
+            )
+        } else {
+            (
+                r"D:\qemu\qemu-system-x86_64.exe".into(),
+                AccelKind::Whpx,
+                AudioDev::Dsound,
+            )
+        };
         Self {
-            qemu_path: r"D:\qemu\qemu-system-x86_64.exe".into(),
-            disk_path: r"D:\NixOS\..\qemu\vms\nixos\nixos-disk.qcow2".into(),
-            iso_path: r"D:\NixOS\..\qemu\vms\nixos\nixos-minimal-26.iso".into(),
+            qemu_path,
+            disk_path: String::new(),
+            iso_path: String::new(),
             ram_mb: 4096,
             smp: 2,
             display: DisplayKind::Gtk,
@@ -152,15 +167,15 @@ impl Default for Config {
             custom_args: String::new(),
             machine_type: MachineType::Pc,
             cpu_model: "host".into(),
-            accel: AccelKind::Whpx,
-            kernel_irqchip: IrqChip::Off,
+            accel,
+            kernel_irqchip: IrqChip::On,
             vmport: VmPort::Auto,
             dump_guest_core: OnOff::On,
             vga: VgaKind::Std,
             display_gl: OnOff::Off,
             nic_model: NicModel::VirtioNet,
             net_backend: NetBackend::User,
-            audio_dev: AudioDev::Disabled,
+            audio_dev,
             sound_hw: SoundHw::Disabled,
             usb_device: UsbDevice::Tablet,
             boot_menu: BootMenu::Off,
@@ -173,6 +188,8 @@ impl Default for Config {
             watchdog_action: WatchdogAction::Reset,
             mem_slots: 0,
             mem_maxmb: 0,
+            monitor_width: 0,
+            monitor_height: 0,
         }
     }
 }
@@ -309,10 +326,12 @@ impl QemuGui {
         // -machine
         let mut machine = vec![self.config.machine_type.as_str().to_string()];
         machine.push(format!("accel={}", self.config.accel.as_str()));
-        machine.push(format!(
-            "kernel-irqchip={}",
-            self.config.kernel_irqchip.as_str()
-        ));
+        if self.config.kernel_irqchip != IrqChip::On {
+            machine.push(format!(
+                "kernel-irqchip={}",
+                self.config.kernel_irqchip.as_str()
+            ));
+        }
         if self.config.vmport != VmPort::Auto {
             machine.push(format!("vmport={}", self.config.vmport.as_str()));
         }
@@ -381,9 +400,32 @@ impl QemuGui {
         args.push("-device".to_string());
         args.push(format!("{},netdev=net0", self.config.nic_model.as_str()));
 
-        // -vga
-        args.push("-vga".to_string());
-        args.push(self.config.vga.as_str().to_string());
+        // -device <vga> (with optional xres/yres) or -vga fallback
+        match self.config.vga {
+            VgaKind::Vmware | VgaKind::Cirrus | VgaKind::Disabled => {
+                if self.config.vga != VgaKind::Disabled {
+                    args.push("-vga".to_string());
+                    args.push(self.config.vga.as_str().to_string());
+                }
+            }
+            _ => {
+                let device = match self.config.vga {
+                    VgaKind::Std => "VGA",
+                    VgaKind::Virtio => "virtio-vga",
+                    VgaKind::Qxl => "qxl",
+                    _ => unreachable!(),
+                };
+                let mut dev = device.to_string();
+                if self.config.monitor_width > 0 && self.config.monitor_height > 0 {
+                    dev.push_str(&format!(
+                        ",xres={},yres={}",
+                        self.config.monitor_width, self.config.monitor_height
+                    ));
+                }
+                args.push("-device".to_string());
+                args.push(dev);
+            }
+        }
 
         // -display
         let mut display = self.config.display.as_str().to_string();
@@ -472,7 +514,12 @@ impl QemuGui {
     fn derive_qemu_img_path(&self) -> String {
         let p = std::path::Path::new(&self.config.qemu_path);
         let parent = p.parent().unwrap_or(std::path::Path::new("."));
-        parent.join("qemu-img.exe").display().to_string()
+        let img_name = if cfg!(target_os = "linux") {
+            "qemu-img"
+        } else {
+            "qemu-img.exe"
+        };
+        parent.join(img_name).display().to_string()
     }
 
     fn create_qcow(&mut self) {
@@ -605,9 +652,15 @@ impl eframe::App for QemuGui {
         self.poll_qemu_img_result();
         self.poll_child_exit();
 
+        let log_width = ui.available_width() * 0.8;
+        let right_w = 40.0;
+        let min_central = 310.0;
+        let max_left = (ui.available_width() - right_w - min_central).max(150.0);
         egui::Panel::left("log_panel")
             .resizable(true)
-            .default_size(650.0)
+            .default_size(log_width)
+            .min_size(150.0)
+            .max_size(max_left)
             .show_inside(ui, |ui| {
                 ui.heading("Log");
                 ui.separator();
@@ -802,6 +855,7 @@ impl eframe::App for QemuGui {
                             egui::ComboBox::from_id_salt("accel")
                                 .selected_text(self.config.accel.as_str())
                                 .show_ui(ui, |ui| {
+                                    ui.selectable_value(&mut self.config.accel, AccelKind::Kvm, "kvm");
                                     ui.selectable_value(&mut self.config.accel, AccelKind::Whpx, "whpx");
                                     ui.selectable_value(&mut self.config.accel, AccelKind::Tcg, "tcg");
                                     ui.selectable_value(&mut self.config.accel, AccelKind::Hax, "hax");
@@ -927,6 +981,55 @@ impl eframe::App for QemuGui {
                                     ui.selectable_value(&mut self.config.display_gl, OnOff::On, "on");
                                 });
                         });
+                        // -- Monitor resolution --
+                        const PRESETS: &[(&str, u32, u32)] = &[
+                            ("Auto (default)", 0, 0),
+                            ("640×480", 640, 480),
+                            ("800×600", 800, 600),
+                            ("1024×768", 1024, 768),
+                            ("1280×720", 1280, 720),
+                            ("1366×768", 1366, 768),
+                            ("1920×1080", 1920, 1080),
+                            ("2560×1440", 2560, 1440),
+                            ("3840×2160", 3840, 2160),
+                        ];
+                        let custom_idx = PRESETS.len();
+                        let cur = (self.config.monitor_width, self.config.monitor_height);
+                        let preset_idx = PRESETS
+                            .iter()
+                            .position(|&(_, w, h)| (w, h) == cur)
+                            .unwrap_or(custom_idx);
+                        let preset_label = if preset_idx < custom_idx {
+                            PRESETS[preset_idx].0
+                        } else {
+                            "Custom"
+                        };
+                        ui.horizontal(|ui| {
+                            ui.label("Resolution:");
+                            egui::ComboBox::from_id_salt("resolution_preset")
+                                .selected_text(preset_label)
+                                .show_ui(ui, |ui| {
+                                    for (i, &(name, w, h)) in PRESETS.iter().enumerate() {
+                                        if ui.selectable_label(preset_idx == i, name).clicked() {
+                                            self.config.monitor_width = w;
+                                            self.config.monitor_height = h;
+                                        }
+                                    }
+                                    let is_custom = preset_idx == custom_idx;
+                                    if ui.selectable_label(is_custom, "Custom").clicked() && cur == (0, 0) {
+                                        self.config.monitor_width = 1024;
+                                        self.config.monitor_height = 768;
+                                    }
+                                });
+                        });
+                        if preset_idx == custom_idx {
+                            ui.horizontal(|ui| {
+                                ui.label("Width:");
+                                ui.add(egui::DragValue::new(&mut self.config.monitor_width).range(256..=7680));
+                                ui.label("Height:");
+                                ui.add(egui::DragValue::new(&mut self.config.monitor_height).range(256..=7680));
+                            });
+                        }
                     });
 
                 egui::CollapsingHeader::new("Audio")
@@ -938,6 +1041,8 @@ impl eframe::App for QemuGui {
                                 .selected_text(self.config.audio_dev.as_str())
                                 .show_ui(ui, |ui| {
                                     ui.selectable_value(&mut self.config.audio_dev, AudioDev::Disabled, "none");
+                                    ui.selectable_value(&mut self.config.audio_dev, AudioDev::Pa, "pa");
+                                    ui.selectable_value(&mut self.config.audio_dev, AudioDev::Alsa, "alsa");
                                     ui.selectable_value(&mut self.config.audio_dev, AudioDev::Dsound, "dsound");
                                 });
                         });
@@ -1110,7 +1215,9 @@ impl eframe::App for QemuGui {
 
 fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default().with_inner_size([880.0, 600.0]).with_maximized(true),
+        viewport: egui::ViewportBuilder::default()
+            .with_inner_size([880.0, 600.0])
+            .with_maximized(true),
         ..Default::default()
     };
 

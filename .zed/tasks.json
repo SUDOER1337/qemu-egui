@@ -1,9 +1,5 @@
 [
-  {
-    "label": "Just: Install",
-    "command": "just install",
-    "tags": ["build"]
-  },
+  // === Just ===
   {
     "label": "Just: Run",
     "command": "just run",
@@ -20,6 +16,33 @@
     "tags": ["test"]
   },
   {
+    "label": "Just: Fix",
+    "command": "just fix",
+    "tags": ["format"]
+  },
+  {
+    "label": "Just: Install",
+    "command": "just install",
+    "tags": ["build"]
+  },
+  {
+    "label": "Just: Clean",
+    "command": "just clean",
+    "tags": ["clean"]
+  },
+
+  // === Cargo ===
+  {
+    "label": "Cargo: Run",
+    "command": "cargo run",
+    "tags": ["build"]
+  },
+  {
+    "label": "Cargo: Check",
+    "command": "cargo check",
+    "tags": ["build"]
+  },
+  {
     "label": "Cargo: Build",
     "command": "cargo build",
     "tags": ["build"]
@@ -28,5 +51,15 @@
     "label": "Cargo: Build Release",
     "command": "cargo build --release",
     "tags": ["build"]
+  },
+  {
+    "label": "Cargo: Clippy",
+    "command": "cargo clippy",
+    "tags": ["lint"]
+  },
+  {
+    "label": "Cargo: Test",
+    "command": "cargo test",
+    "tags": ["test"]
   }
 ]
