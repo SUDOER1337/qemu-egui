@@ -73,6 +73,8 @@ struct QemuGui {
     config: Config,
     config_path: PathBuf,
     log: String,
+    error: Option<String>,
+    confirming_kill: bool,
     child: Option<Child>,
 }
 
@@ -93,6 +95,8 @@ impl Default for QemuGui {
             config,
             config_path,
             log: String::new(),
+            error: None,
+            confirming_kill: false,
             child: None,
         }
     }
@@ -122,11 +126,22 @@ impl QemuGui {
         if self.config.qemu_path.trim().is_empty() {
             return Err("QEMU path is empty".into());
         }
+        if !std::path::Path::new(&self.config.qemu_path).exists() {
+            return Err("QEMU binary not found at configured path".into());
+        }
         if self.config.disk_path.trim().is_empty() {
             return Err("Disk image path is empty".into());
         }
-        if boot_from_cd && self.config.iso_path.trim().is_empty() {
-            return Err("ISO path is empty".into());
+        if !std::path::Path::new(&self.config.disk_path).exists() {
+            return Err("Disk image not found at configured path".into());
+        }
+        if boot_from_cd {
+            if self.config.iso_path.trim().is_empty() {
+                return Err("ISO path is empty".into());
+            }
+            if !std::path::Path::new(&self.config.iso_path).exists() {
+                return Err("ISO file not found at configured path".into());
+            }
         }
         if self.config.ram_mb == 0 {
             return Err("RAM must be > 0".into());
@@ -184,7 +199,9 @@ impl QemuGui {
     }
 
     fn launch_qemu(&mut self, boot_from_cd: bool) {
+        self.error = None;
         if let Err(e) = self.validate(boot_from_cd) {
+            self.error = Some(e.clone());
             self.log_push(&format!("Validation failed: {e}\n"));
             return;
         }
@@ -203,12 +220,15 @@ impl QemuGui {
                 self.log_push("QEMU started.\n");
             }
             Err(e) => {
-                self.log_push(&format!("Failed to launch QEMU: {e}\n"));
+                let msg = format!("Failed to launch QEMU: {e}");
+                self.log_push(&format!("{msg}\n"));
+                self.error = Some(msg);
             }
         }
     }
 
     fn kill_qemu(&mut self) {
+        self.confirming_kill = false;
         if let Some(mut child) = self.child.take() {
             let _ = child.kill();
             std::thread::spawn(move || {
@@ -238,11 +258,45 @@ impl eframe::App for QemuGui {
                 ui.heading("QEMU GUI Wrapper");
 
                 ui.separator();
-                ui.label("QEMU Path:");
-                ui.text_edit_singleline(&mut self.config.qemu_path);
+                ui.horizontal(|ui| {
+                    ui.label("QEMU Path:");
+                    if ui.button("Browse...").clicked() {
+                        if let Some(path) = rfd::FileDialog::new()
+                            .add_filter("Executable", &["exe"])
+                            .set_title("Select QEMU Executable")
+                            .pick_file()
+                        {
+                            self.config.qemu_path = path.display().to_string();
+                            self.error = None;
+                        }
+                    }
+                });
+                if ui
+                    .text_edit_singleline(&mut self.config.qemu_path)
+                    .changed()
+                {
+                    self.error = None;
+                }
 
-                ui.label("Disk Image:");
-                ui.text_edit_singleline(&mut self.config.disk_path);
+                ui.horizontal(|ui| {
+                    ui.label("Disk Image:");
+                    if ui.button("Browse...").clicked() {
+                        if let Some(path) = rfd::FileDialog::new()
+                            .add_filter("Disk Image", &["qcow2", "img", "raw"])
+                            .set_title("Select Disk Image")
+                            .pick_file()
+                        {
+                            self.config.disk_path = path.display().to_string();
+                            self.error = None;
+                        }
+                    }
+                });
+                if ui
+                    .text_edit_singleline(&mut self.config.disk_path)
+                    .changed()
+                {
+                    self.error = None;
+                }
 
                 ui.horizontal(|ui| {
                     ui.label("ISO Path:");
@@ -253,19 +307,24 @@ impl eframe::App for QemuGui {
                             .pick_file()
                         {
                             self.config.iso_path = path.display().to_string();
+                            self.error = None;
                         }
                     }
                 });
-                ui.text_edit_singleline(&mut self.config.iso_path);
+                if ui.text_edit_singleline(&mut self.config.iso_path).changed() {
+                    self.error = None;
+                }
 
                 ui.horizontal(|ui| {
                     ui.label("RAM (MB):");
-                    ui.add(egui::Slider::new(&mut self.config.ram_mb, 512..=32768));
+                    ui.add(egui::Slider::new(&mut self.config.ram_mb, 512..=32768))
+                        .on_hover_text("Memory allocated to the VM (512 MB – 32 GB)");
                 });
 
                 ui.horizontal(|ui| {
                     ui.label("SMP (CPU cores):");
-                    ui.add(egui::Slider::new(&mut self.config.smp, 1..=32));
+                    ui.add(egui::Slider::new(&mut self.config.smp, 1..=32))
+                        .on_hover_text("Number of CPU cores assigned to the VM");
                 });
 
                 ui.horizontal(|ui| {
@@ -290,17 +349,41 @@ impl eframe::App for QemuGui {
                     }
                 });
 
+                if let Some(ref err) = self.error {
+                    ui.colored_label(egui::Color32::RED, err.as_str());
+                }
+
                 ui.separator();
 
+                let child_running = self.child.is_some();
                 ui.horizontal(|ui| {
-                    if ui.button("Boot from Disk").clicked() {
+                    if ui
+                        .add_enabled(!child_running, egui::Button::new("Boot from Disk"))
+                        .clicked()
+                    {
                         self.launch_qemu(false);
                     }
-                    if ui.button("Install (Boot from ISO)").clicked() {
+                    if ui
+                        .add_enabled(!child_running, egui::Button::new("Install (Boot from ISO)"))
+                        .clicked()
+                    {
                         self.launch_qemu(true);
                     }
-                    if ui.button("Kill QEMU").clicked() {
-                        self.kill_qemu();
+                    if self.confirming_kill {
+                        if ui
+                            .add_enabled(child_running, egui::Button::new("Confirm Kill QEMU?"))
+                            .clicked()
+                        {
+                            self.kill_qemu();
+                        }
+                        if ui.button("Cancel").clicked() {
+                            self.confirming_kill = false;
+                        }
+                    } else if ui
+                        .add_enabled(child_running, egui::Button::new("Kill QEMU"))
+                        .clicked()
+                    {
+                        self.confirming_kill = true;
                     }
                 });
 
@@ -308,12 +391,10 @@ impl eframe::App for QemuGui {
                 ui.label("Log:");
                 egui::ScrollArea::vertical()
                     .max_height(300.0)
+                    .stick_to_bottom(true)
                     .show(ui, |ui| {
-                        ui.add(
-                            egui::TextEdit::multiline(&mut self.log)
-                                .font(egui::TextStyle::Monospace)
-                                .desired_rows(10)
-                                .desired_width(f32::INFINITY),
+                        ui.label(
+                            egui::RichText::new(&self.log).text_style(egui::TextStyle::Monospace),
                         );
                     });
             });
