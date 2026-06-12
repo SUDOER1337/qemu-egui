@@ -30,15 +30,15 @@ A minimal egui wrapper around QEMU for personal use (runs from USB drive on Wind
 ## Build speed — Done
 - `debug = 0` in dev profile (skips debug info, faster linking)
 - `codegen-units = 256` (max parallel codegen)
-- `rust-lld.exe` as linker (~2-3x faster than GNU ld; opt-in via docs)
-- `--threads=8` in linker flags (opt-in via docs)
+- `rust-lld.exe` as linker (~2-3x faster than GNU ld; configured in `.cargo/config.toml`)
+- `--threads=8` in linker flags
 - `sccache` as `RUSTC_WRAPPER` (opt-in via env var; documented in README)
-- `.cargo/config.toml` cleaned for CI compatibility (no machine-specific paths)
+- `rust-toolchain.toml` pins `stable-x86_64-pc-windows-gnu` (no `+toolchain` override needed)
 
 ## Known issues (current)
 - Hardcoded Windows paths (intentional for personal USB-drive use)
 - `accel=whpx` hardcoded (Windows-only, intentional)
-- `ld.lld.exe` wrapper path is machine-specific; not portable without toolchain on USB
+- `rust-lld.exe` path in `.cargo/config.toml` is machine-specific (`C:\Users\USER\.rustup\...`); update if your rustup home differs
 - CI uses MSVC target (not GNU), so `[target.x86_64-pc-windows-gnu]` config is silently ignored there
 
 ## Conventions

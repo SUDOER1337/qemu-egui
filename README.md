@@ -4,26 +4,21 @@
 
 A minimal egui-based GUI wrapper for QEMU, designed for personal portable use from a USB drive on Windows.
 
-## Prerequisites (local build)
+## Prerequisites
 
-- Rust toolchain: `stable-x86_64-pc-windows-gnu`
-- QEMU installed and accessible at the configured path
+- **QEMU** installed and accessible at the configured path (e.g. `D:\qemu\qemu-system-x86_64.exe`)
+- **Rust** toolchain (auto-pinned via `rust-toolchain.toml`):
+  - Channel: `stable-x86_64-pc-windows-gnu`
+  - Fast linker `rust-lld.exe` pre-configured in `.cargo/config.toml`
 
-```sh
-# Install the windows-gnu toolchain
-rustup toolchain install stable-x86_64-pc-windows-gnu
-rustup default stable-x86_64-pc-windows-gnu
-
-# Install llvm-tools for the fast lld linker (optional, ~2-3x faster)
-rustup component add llvm-tools-preview
-
-# Install sccache compiler cache (optional, ~2-3x on re-builds)
-# winget install Mozilla.sccache   # or: scoop install sccache
-```
-
-Then set these environment variables in your shell for the fastest builds:
+#### Optional: faster re-builds with sccache
 
 ```sh
+# Install sccache (one of these):
+# winget install Mozilla.sccache
+# scoop install sccache
+
+# Then in your shell before running cargo:
 $env:RUSTC_WRAPPER = "sccache"
 ```
 
@@ -36,24 +31,13 @@ cargo clippy      # lint
 cargo fmt         # format
 ```
 
-Or use the `just` task runner:
+Or with `just` (PowerShell backend):
 
 ```sh
 just run          # cargo run
 just check        # cargo check
 just fix          # clippy + fmt
 ```
-
-
-Local-only overrides (not available on CI):
- - Set `RUSTC_WRAPPER = "sccache"` in your shell for faster re-builds
- - Use `rust-lld` linker: install llvm-tools-preview via rustup, then add:
- 
-   ```toml
-   [target.x86_64-pc-windows-gnu]
-   linker = "...rustup.../bin/rust-lld.exe"
-   rustflags = ["-C", "link-arg=--threads=8"]
-   ```
 
 ## Usage
 
