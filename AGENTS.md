@@ -13,6 +13,7 @@ A minimal egui wrapper around QEMU for personal use (runs from USB drive on Wind
 - `src/main.rs` — single-file app: Config, QemuGui struct, egui App impl, main entry
 - `Cargo.toml` — dependencies
 - `justfile` — commands: `check`, `run`, `watch`, `test`, `fix`, `build-release`, `install`, `clean`
+- `.github/workflows/rust.yml` — CI: check, clippy, fmt on `windows-latest` (MSVC)
 
 ## Phase 1 — Done
 - `Drop` impl kills QEMU child on exit (prevents orphan process)
@@ -29,8 +30,6 @@ A minimal egui wrapper around QEMU for personal use (runs from USB drive on Wind
 ## Build speed — Done
 - `debug = 0` in dev profile (skips debug info, faster linking)
 - `codegen-units = 256` (max parallel codegen)
-- `debug = 0` in dev profile (skips debug info, faster linking)
-- `codegen-units = 256` (max parallel codegen)
 - `rust-lld.exe` as linker (~2-3x faster than GNU ld; opt-in via docs)
 - `--threads=8` in linker flags (opt-in via docs)
 - `sccache` as `RUSTC_WRAPPER` (opt-in via env var; documented in README)
@@ -40,6 +39,7 @@ A minimal egui wrapper around QEMU for personal use (runs from USB drive on Wind
 - Hardcoded Windows paths (intentional for personal USB-drive use)
 - `accel=whpx` hardcoded (Windows-only, intentional)
 - `ld.lld.exe` wrapper path is machine-specific; not portable without toolchain on USB
+- CI uses MSVC target (not GNU), so `[target.x86_64-pc-windows-gnu]` config is silently ignored there
 
 ## Conventions
 - Single `src/main.rs` (no modules yet)
