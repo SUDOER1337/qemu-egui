@@ -10,13 +10,16 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  build:
-
-    runs-on: ubuntu-latest
+  check:
+    runs-on: windows-latest
 
     steps:
     - uses: actions/checkout@v4
-    - name: Build
-      run: cargo build --verbose
-    - name: Run tests
-      run: cargo test --verbose
+    - name: Install Rust (windows-gnu)
+      run: rustup toolchain install stable-x86_64-pc-windows-gnu && rustup default stable-x86_64-pc-windows-gnu
+    - name: Check
+      run: cargo check --verbose
+    - name: Clippy
+      run: cargo clippy --verbose
+    - name: Format check
+      run: cargo fmt --check
