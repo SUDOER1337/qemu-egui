@@ -44,6 +44,17 @@ just check        # cargo check
 just fix          # clippy + fmt
 ```
 
+
+Local-only overrides (not available on CI):
+ - Set `RUSTC_WRAPPER = "sccache"` in your shell for faster re-builds
+ - Use `rust-lld` linker: install llvm-tools-preview via rustup, then add:
+ 
+   ```toml
+   [target.x86_64-pc-windows-gnu]
+   linker = "...rustup.../bin/rust-lld.exe"
+   rustflags = ["-C", "link-arg=--threads=8"]
+   ```
+
 ## Usage
 
 1. Configure paths to QEMU binary, disk image, and ISO
