@@ -1,0 +1,13 @@
+[env]
+RUSTC_WRAPPER = "sccache"
+
+[profile.dev]
+opt-level = 0
+debug = 0
+incremental = true
+codegen-units = 256
+lto = "off"
+
+[target.x86_64-pc-windows-gnu]
+linker = "C:\\Users\\USER\\.rustup\\toolchains\\stable-x86_64-pc-windows-gnu\\lib\\rustlib\\x86_64-pc-windows-gnu\\bin\\rust-lld.exe"
+rustflags = ["-C", "link-arg=--threads=8"]

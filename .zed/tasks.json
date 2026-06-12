@@ -1,0 +1,32 @@
+[
+  {
+    "label": "Just: Install",
+    "command": "just install",
+    "tags": ["build"]
+  },
+  {
+    "label": "Just: Run",
+    "command": "just run",
+    "tags": ["build"]
+  },
+  {
+    "label": "Just: Check",
+    "command": "just check",
+    "tags": ["build"]
+  },
+  {
+    "label": "Just: Test",
+    "command": "just test",
+    "tags": ["test"]
+  },
+  {
+    "label": "Cargo: Build",
+    "command": "cargo build",
+    "tags": ["build"]
+  },
+  {
+    "label": "Cargo: Build Release",
+    "command": "cargo build --release",
+    "tags": ["build"]
+  }
+]

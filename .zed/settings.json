@@ -1,0 +1,28 @@
+{
+  "formatter": {
+    "language_server": {
+      "name": "rust-analyzer"
+    }
+  },
+  "code_actions_on_format": {
+    "source.fixAll.rust": true,
+    "source.organizeImports.rust": true
+  },
+  "lsp": {
+    "rust-analyzer": {
+      "initialization_options": {
+        "cargo": {
+          "buildScripts": {
+            "enable": true
+          }
+        },
+        "procMacro": {
+          "enable": true
+        }
+      }
+    }
+  },
+  "tab_size": 2,
+  "hard_tabs": false,
+  "preferred_line_length": 120
+}
