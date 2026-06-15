@@ -4,7 +4,7 @@
 A minimal egui wrapper around QEMU — runs on Linux and Windows (runs from USB drive on Windows/GNU target).
 
 ## Stack
-- Rust edition 2021, `stable-x86_64-pc-windows-gnu` toolchain
+- Rust edition 2021, `stable` toolchain (resolves to native host: GNU on Windows, default on Linux)
 - `eframe`/`egui` 0.34 with wgpu backend
 - `serde` + `ron` 0.8 for config persistence
 - `just` as task runner (powershell backend)
@@ -13,7 +13,6 @@ A minimal egui wrapper around QEMU — runs on Linux and Windows (runs from USB 
 - `src/main.rs` — single-file app: Config, QemuGui struct, egui App impl, main entry
 - `Cargo.toml` — dependencies
 - `justfile` — commands: `check`, `run`, `watch`, `test`, `fix`, `build-release`, `install`, `clean`
-- `.github/workflows/rust.yml` — CI: check, clippy, fmt on `windows-latest` (MSVC)
 
 ## Phase 1 — Done
 - `Drop` impl kills QEMU child on exit (prevents orphan process)
@@ -33,13 +32,15 @@ A minimal egui wrapper around QEMU — runs on Linux and Windows (runs from USB 
 - `rust-lld.exe` as linker (~2-3x faster than GNU ld; configured in `.cargo/config.toml`)
 - `--threads=8` in linker flags
 - `sccache` as `RUSTC_WRAPPER` (opt-in via env var; documented in README)
-- `rust-toolchain.toml` pins `stable-x86_64-pc-windows-gnu` (no `+toolchain` override needed)
+- `rust-toolchain.toml` pins `stable` (host-native; GNU toolchain set per-machine via rustup default)
+- `tools/lld-link.cmd` wraps `rust-lld.exe` via `%RUSTUP_HOME%` — no hardcoded username
 
 ## Known issues (current)
 - Hardcoded Windows paths (intentional for personal USB-drive use)
 - `accel=whpx` hardcoded (Windows-only, intentional)
-- `rust-lld.exe` path in `.cargo/config.toml` is machine-specific (`C:\Users\USER\.rustup\...`); update if your rustup home differs
-- CI uses MSVC target (not GNU), so `[target.x86_64-pc-windows-gnu]` config is silently ignored there
+- `accel=whpx` and default QEMU paths are Windows-only (intentional for USB-drive use)
+- Linux build requires `mold` for the fast linker path; falls back to default `ld` if absent
+- On Windows, `tools/lld-link.cmd` assumes the active toolchain is `stable-x86_64-pc-windows-gnu`
 
 ## Conventions
 - Single `src/main.rs` (no modules yet)

@@ -6,9 +6,9 @@ codegen-units = 256
 lto = "off"
 
 # Fast linker: rust-lld (~2-3x faster link than GNU ld)
-# CI skips this section because it uses MSVC target
+# Wrapper script resolves rust-lld via %RUSTUP_HOME% — no hardcoded username needed.
 [target.x86_64-pc-windows-gnu]
-linker = "C:\\Users\\USER\\.rustup\\toolchains\\stable-x86_64-pc-windows-gnu\\lib\\rustlib\\x86_64-pc-windows-gnu\\bin\\rust-lld.exe"
+linker = "tools/lld-link.cmd"
 rustflags = ["-C", "link-arg=--threads=8"]
 
 # Linux host: fast mold linker (via gcc/clang driver)

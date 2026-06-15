@@ -1,8 +1,14 @@
 check:
     cargo check
 
-run:
+build:
+    cargo build
+
+run: build
     cargo run
+
+timings:
+    cargo build --timings
 
 watch:
     cargo watch -x check

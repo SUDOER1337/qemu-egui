@@ -2,8 +2,14 @@
 
 [![Rust](https://github.com/SUDOER1337/qemu-egui/actions/workflows/rust.yml/badge.svg)](https://github.com/SUDOER1337/qemu-egui/actions/workflows/rust.yml)
 
+A minimal portable Rust Egui wrapper for QEMU — runs on Linux and Windows.
 
-A minimal egui-based GUI wrapper for QEMU — runs on Linux and Windows.
+## Showcase
+
+![qemu-egui screenshot](assets/qemuegui.png)
+
+## Roadmap
+[] sessions
 
 ## Prerequisites
 
