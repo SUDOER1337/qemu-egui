@@ -13,6 +13,9 @@ A minimal egui wrapper around QEMU — runs on Linux and Windows (runs from USB 
 - `src/main.rs` — single-file app: Config, QemuGui struct, egui App impl, main entry
 - `Cargo.toml` — dependencies
 - `justfile` — commands: `check`, `run`, `watch`, `test`, `fix`, `build-release`, `install`, `clean`
+- `flake.nix` — Nix flake: `packages` (Linux), `devShells`, `checks`, `apps`, `formatter`
+- `nix/package.nix` — `buildRustPackage` for `qemu-egui`
+- `nix/clippy-check.nix` — standalone `cargo clippy --deny warnings` derivation
 
 ## Phase 1 — Done
 - `Drop` impl kills QEMU child on exit (prevents orphan process)
@@ -35,12 +38,25 @@ A minimal egui wrapper around QEMU — runs on Linux and Windows (runs from USB 
 - `rust-toolchain.toml` pins `stable` (host-native; GNU toolchain set per-machine via rustup default)
 - `tools/lld-link.cmd` wraps `rust-lld.exe` via `%RUSTUP_HOME%` — no hardcoded username
 
+## Nix flake — Done
+- `flake.nix` on `nixpkgs` (nixos-unstable), systems: `x86_64-linux`, `aarch64-linux`
+- `packages.qemu-egui` via `buildRustPackage`, pinned to the checked-in `Cargo.lock` (no vendor hash)
+- `devShells.default`: rustc/cargo/clippy/rust-analyzer/rustfmt/cargo-watch/just/sccache/mold/qemu/gdb
+- `shellHook` sets `RUSTC_WRAPPER=sccache`; `LD_LIBRARY_PATH` covers libglvnd, xkbcommon, wayland, vulkan, X11
+- `checks`: `build`, `clippy` (deny warnings), `test` — all pass on `nix flake check`
+- `apps.default` → `nix run`
+- `overlays.default` + `formatter` (`pkgs.nixfmt`)
+- Both package derivations `rm -rf .cargo tools` in `postPatch` — the repo's cargo config hardcodes the Windows lld wrapper and `-fuse-ld=mold`
+- `clippy-check.nix` sets `auditable = false`; `buildRustPackage` otherwise substitutes `cargo` with the cargo-auditable wrapper, which swallows `cargo clippy`
+
 ## Known issues (current)
 - Hardcoded Windows paths (intentional for personal USB-drive use)
 - `accel=whpx` hardcoded (Windows-only, intentional)
 - `accel=whpx` and default QEMU paths are Windows-only (intentional for USB-drive use)
 - Linux build requires `mold` for the fast linker path; falls back to default `ld` if absent
 - On Windows, `tools/lld-link.cmd` assumes the active toolchain is `stable-x86_64-pc-windows-gnu`
+- Flake packaging is Linux-only; Windows builds still go through `just` / `cargo`
+- Flake inputs come from the git tree, so new files must be `git add`ed before `nix build` sees them
 
 ## Conventions
 - Single `src/main.rs` (no modules yet)

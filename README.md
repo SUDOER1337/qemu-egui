@@ -56,6 +56,30 @@ just check        # cargo check
 just fix          # clippy + fmt
 ```
 
+## Nix
+
+A flake is included for reproducible Linux builds and a fully-provisioned dev shell.
+
+```sh
+nix develop                  # rustc, cargo, clippy, rust-analyzer, just, sccache, mold, qemu
+nix build                    # packaged binary -> ./result/bin/qemu-egui
+nix run                      # build and launch
+nix flake check              # build + clippy --deny warnings + tests
+nix fmt                      # format the nix files
+```
+
+`nix develop` sets `RUSTC_WRAPPER=sccache` and puts the wgpu/X11/GL libraries on
+`LD_LIBRARY_PATH` for the dev build.
+
+The packaging build strips `.cargo/config.toml` and `tools/` from the source tree
+(`nix/package.nix:49`), since those hardcode the Windows `rust-lld` wrapper and
+`-fuse-ld=mold`, neither of which exist in the sandbox.
+
+Notes:
+- `flake.nix` packages Linux only; Windows still builds through `just` / `cargo`.
+- Building the flake needs the `flake.nix`, `nix/`, and `flake.lock` files to be
+  git-tracked (Nix reads the git tree, not the working directory).
+
 ## Usage
 
 1. Configure paths to QEMU binary, disk image, and ISO

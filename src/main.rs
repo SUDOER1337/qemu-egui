@@ -102,6 +102,12 @@ str_enum! {
 str_enum! {
     enum BootStrict { On = "on", Off = "off" }
 }
+str_enum! {
+    enum FirmwareType { SeaBios = "seabios", Edk2 = "edk2" }
+}
+str_enum! {
+    enum CpuPreset { Host = "host", Max = "max", Qemu64 = "qemu64", Custom = "custom" }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -116,6 +122,7 @@ struct Config {
     custom_args: String,
     machine_type: MachineType,
     cpu_model: String,
+    cpu_preset: CpuPreset,
     accel: AccelKind,
     kernel_irqchip: IrqChip,
     vmport: VmPort,
@@ -139,6 +146,8 @@ struct Config {
     mem_maxmb: u32,
     monitor_width: u32,
     monitor_height: u32,
+    firmware: FirmwareType,
+    uefi_path: String,
 }
 
 impl Default for Config {
@@ -166,7 +175,11 @@ impl Default for Config {
             boot_order: "c".into(),
             custom_args: String::new(),
             machine_type: MachineType::Pc,
-            cpu_model: "host".into(),
+            cpu_model: String::new(),
+            cpu_preset: match accel {
+                AccelKind::Whpx => CpuPreset::Qemu64,
+                _ => CpuPreset::Host,
+            },
             accel,
             kernel_irqchip: IrqChip::On,
             vmport: VmPort::Auto,
@@ -190,6 +203,8 @@ impl Default for Config {
             mem_maxmb: 0,
             monitor_width: 0,
             monitor_height: 0,
+            firmware: FirmwareType::SeaBios,
+            uefi_path: String::new(),
         }
     }
 }
@@ -198,6 +213,144 @@ impl Default for Config {
 struct QemuImgResult {
     success: bool,
     message: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum Severity {
+    Low,
+    Medium,
+    High,
+}
+
+#[derive(Debug, Clone)]
+struct QemuWarning {
+    severity: Severity,
+    message: String,
+}
+
+/** Parse QEMU stderr for known warning patterns.
+ *  @param stderr - Raw stderr output from QEMU
+ *  @returns List of classified warnings
+ */
+#[allow(clippy::if_same_then_else)]
+fn classify_stderr(stderr: &str) -> Vec<QemuWarning> // Classify QEMU stderr warnings
+{
+    let mut warnings = Vec::new();
+    for line in stderr.lines() {
+        if line.contains("feature conflicts with APX")
+            || line.contains("feature conflicts with MPX")
+        {
+            warnings.push(QemuWarning {
+                severity: Severity::Low,
+                message: line.to_string(),
+            });
+        } else if line.contains("not XSAVE capable") {
+            warnings.push(QemuWarning {
+                severity: Severity::Low,
+                message: line.to_string(),
+            });
+        } else if line.contains("Failed to get performance monitoring") {
+            warnings.push(QemuWarning {
+                severity: Severity::Low,
+                message: line.to_string(),
+            });
+        } else if line.contains("VP exit code 4") {
+            warnings.push(QemuWarning {
+                severity: Severity::Medium,
+                message: line.to_string(),
+            });
+        } else if line.contains("No bootable device") {
+            warnings.push(QemuWarning {
+                severity: Severity::High,
+                message: line.to_string(),
+            });
+        }
+    }
+    warnings
+}
+
+#[derive(Debug, Clone)]
+struct DiskInfo {
+    virtual_size_gb: f64,
+    actual_size_kb: f64,
+    backing_file: Option<String>,
+    format: String,
+    snapshots: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+struct DiskInfoResult {
+    info: Option<DiskInfo>,
+    error: String,
+}
+
+impl DiskInfo {
+    /** Parse `qemu-img info` output into a structured DiskInfo.
+     *  @param raw - Raw stdout from qemu-img info
+     *  @returns Parsed DiskInfo (best-effort; zero values on failure to parse)
+     */
+    fn parse(raw: &str) -> DiskInfo // Parse qemu-img info output
+    {
+        let mut virtual_size_gb = 0.0;
+        let mut actual_size_kb = 0.0;
+        let mut backing_file = None;
+        let mut format = String::new();
+        let mut snapshots = Vec::new();
+        let mut in_snapshots = false;
+
+        for line in raw.lines() {
+            let line = line.trim();
+            if let Some(val) = line.strip_prefix("virtual size: ") {
+                // Extract numeric GB from strings like "30 GiB" or "21474836480 bytes"
+                if let Some(gib) = val.split_whitespace().next() {
+                    if let Ok(n) = gib.parse::<f64>() {
+                        virtual_size_gb = n;
+                    }
+                } else if let Some(bytes) = val.strip_suffix(" bytes") {
+                    if let Ok(n) = bytes.trim().parse::<f64>() {
+                        virtual_size_gb = n / (1024.0 * 1024.0 * 1024.0);
+                    }
+                }
+            } else if let Some(val) = line.strip_prefix("disk size: ") {
+                // Parse like "192 KiB" or "2.5 GiB"
+                let parts: Vec<&str> = val.split_whitespace().collect();
+                if parts.len() >= 2 {
+                    if let Ok(n) = parts[0].parse::<f64>() {
+                        actual_size_kb = match parts[1] {
+                            "KiB" => n,
+                            "MiB" => n * 1024.0,
+                            "GiB" => n * 1024.0 * 1024.0,
+                            "bytes" => n / 1024.0,
+                            _ => 0.0,
+                        };
+                    }
+                }
+            } else if let Some(val) = line.strip_prefix("backing file: ") {
+                backing_file = Some(val.trim().to_string());
+            } else if let Some(val) = line.strip_prefix("file format: ") {
+                format = val.trim().to_string();
+            } else if line == "Snapshot list:" {
+                in_snapshots = true;
+            } else if in_snapshots && line.starts_with("ID") {
+                // Header line, skip
+            } else if in_snapshots && !line.is_empty() && !line.starts_with(' ') {
+                in_snapshots = false;
+            } else if in_snapshots && !line.is_empty() {
+                // Snapshot line
+                let parts: Vec<&str> = line.split_whitespace().collect();
+                if parts.len() >= 2 {
+                    snapshots.push(parts[1].to_string());
+                }
+            }
+        }
+        DiskInfo {
+            virtual_size_gb,
+            actual_size_kb,
+            backing_file,
+            format,
+            snapshots,
+        }
+    }
 }
 
 struct QcowCreateState {
@@ -232,6 +385,11 @@ struct QemuGui {
     qcow_create: QcowCreateState,
     qemu_img_result: Arc<Mutex<Option<QemuImgResult>>>,
     child_exit_code: Option<i32>,
+    qemu_version: String,
+    disk_info_running: bool,
+    disk_info_result: Arc<Mutex<Option<DiskInfoResult>>>,
+    stderr_buffer: Arc<Mutex<String>>,
+    qemu_warnings: Vec<QemuWarning>,
 }
 
 impl Default for QemuGui {
@@ -247,7 +405,7 @@ impl Default for QemuGui {
             Config::default()
         };
 
-        Self {
+        let mut this = Self {
             config,
             config_path,
             log: String::new(),
@@ -257,7 +415,14 @@ impl Default for QemuGui {
             qcow_create: QcowCreateState::default(),
             qemu_img_result: Arc::new(Mutex::new(None)),
             child_exit_code: None,
-        }
+            qemu_version: String::new(),
+            disk_info_running: false,
+            disk_info_result: Arc::new(Mutex::new(None)),
+            stderr_buffer: Arc::new(Mutex::new(String::new())),
+            qemu_warnings: Vec::new(),
+        };
+        this.detect_qemu_version();
+        this
     }
 }
 
@@ -317,6 +482,14 @@ impl QemuGui {
                 return Err("ISO file not found at configured path".into());
             }
         }
+        if self.config.firmware == FirmwareType::Edk2 {
+            if self.config.uefi_path.trim().is_empty() {
+                return Err("UEFI firmware path is empty".into());
+            }
+            if !std::path::Path::new(&self.config.uefi_path).exists() {
+                return Err("UEFI firmware file not found".into());
+            }
+        }
         Ok(())
     }
 
@@ -345,9 +518,15 @@ impl QemuGui {
         args.push(machine.join(","));
 
         // -cpu
-        if !self.config.cpu_model.is_empty() {
-            args.push("-cpu".to_string());
-            args.push(self.config.cpu_model.clone());
+        {
+            let cpu = match self.config.cpu_preset {
+                CpuPreset::Custom => self.config.cpu_model.trim().to_string(),
+                _ => self.config.cpu_preset.as_str().to_string(),
+            };
+            if !cpu.is_empty() {
+                args.push("-cpu".to_string());
+                args.push(cpu);
+            }
         }
 
         // -m
@@ -365,6 +544,15 @@ impl QemuGui {
         // -smp
         args.push("-smp".to_string());
         args.push(self.config.smp.to_string());
+
+        // UEFI pflash (must precede disk drive)
+        if self.config.firmware == FirmwareType::Edk2 && !self.config.uefi_path.trim().is_empty() {
+            args.push("-drive".to_string());
+            args.push(format!(
+                "if=pflash,format=raw,readonly=on,file={}",
+                self.config.uefi_path
+            ));
+        }
 
         // -drive
         args.push("-drive".to_string());
@@ -473,6 +661,8 @@ impl QemuGui {
     fn launch_qemu(&mut self, boot_from_cd: bool) {
         self.child_exit_code = None;
         self.error = None;
+        self.qemu_warnings.clear();
+        *self.stderr_buffer.lock().unwrap() = String::new();
         if let Err(e) = self.validate(boot_from_cd) {
             self.error = Some(e.clone());
             self.log_push(&format!("Validation failed: {e}\n"));
@@ -487,8 +677,23 @@ impl QemuGui {
             args.join(" ")
         ));
 
-        match Command::new(&self.config.qemu_path).args(&args).spawn() {
-            Ok(child) => {
+        match Command::new(&self.config.qemu_path)
+            .args(&args)
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+        {
+            Ok(mut child) => {
+                let stderr_buf = Arc::clone(&self.stderr_buffer);
+                if let Some(stderr) = child.stderr.take() {
+                    std::thread::spawn(move || {
+                        use std::io::Read;
+                        let mut reader = std::io::BufReader::new(stderr);
+                        let mut buf = String::new();
+                        if reader.read_to_string(&mut buf).is_ok() {
+                            *stderr_buf.lock().unwrap() = buf;
+                        }
+                    });
+                }
                 self.child = Some(child);
                 self.log_push("QEMU started.\n");
             }
@@ -509,6 +714,28 @@ impl QemuGui {
             });
             self.log_push("QEMU terminated.\n");
         }
+        // Parse any stderr captured so far
+        let stderr = self.stderr_buffer.lock().unwrap().clone();
+        if !stderr.is_empty() {
+            let warnings = classify_stderr(&stderr);
+            if !warnings.is_empty() {
+                let log_lines: Vec<String> = warnings
+                    .iter()
+                    .map(|w| {
+                        let sev = match w.severity {
+                            Severity::Low => "LOW",
+                            Severity::Medium => "MEDIUM",
+                            Severity::High => "HIGH",
+                        };
+                        format!("[{sev}] {}\n", w.message)
+                    })
+                    .collect();
+                self.qemu_warnings = warnings;
+                for line in log_lines {
+                    self.log_push(&line);
+                }
+            }
+        }
     }
 
     fn derive_qemu_img_path(&self) -> String {
@@ -520,6 +747,50 @@ impl QemuGui {
             "qemu-img.exe"
         };
         parent.join(img_name).display().to_string()
+    }
+
+    /// Auto-detect the EDK2 firmware file relative to the QEMU binary.
+    fn auto_detect_uefi_path(&self) -> Option<String> {
+        let p = std::path::Path::new(&self.config.qemu_path);
+        let parent = p.parent()?;
+        let candidate = parent.join("share").join("edk2-x86_64-code.fd");
+        if candidate.exists() {
+            Some(candidate.display().to_string())
+        } else {
+            None
+        }
+    }
+
+    /** Check for firmware/machine-type conflicts.
+     *  @returns A warning string or None.
+     */
+    fn detect_qemu_version(&mut self) // Detect QEMU version
+    {
+        let path = self.config.qemu_path.trim();
+        if path.is_empty() || !std::path::Path::new(path).exists() {
+            self.qemu_version.clear();
+            return;
+        }
+        if let Ok(out) = std::process::Command::new(path).arg("--version").output() {
+            if out.status.success() {
+                let ver = String::from_utf8_lossy(&out.stdout);
+                let first = ver.lines().next().unwrap_or("").trim().to_string();
+                self.qemu_version = first;
+            }
+        }
+    }
+
+    fn firmware_warning(&self) -> Option<String> // Check firmware/machine conflicts
+    {
+        if self.config.firmware == FirmwareType::Edk2 && self.config.machine_type == MachineType::Pc
+        {
+            Some(
+                "Q35 is generally recommended for UEFI; pc (i440FX) may work but is not ideal."
+                    .into(),
+            )
+        } else {
+            None
+        }
     }
 
     fn create_qcow(&mut self) {
@@ -594,6 +865,51 @@ impl QemuGui {
         });
     }
 
+    fn run_qemu_img_info(&mut self) // Run qemu-img info on disk path
+    {
+        let path = self.config.disk_path.trim().to_string();
+        if path.is_empty() || !std::path::Path::new(&path).exists() {
+            return;
+        }
+        let qemu_img = self.derive_qemu_img_path();
+        if !std::path::Path::new(&qemu_img).exists() {
+            return;
+        }
+
+        self.disk_info_running = true;
+        let result = Arc::clone(&self.disk_info_result);
+
+        std::thread::spawn(move || {
+            let output = Command::new(&qemu_img).args(["info", &path]).output();
+            let res = match output {
+                Ok(o) if o.status.success() => {
+                    let raw = String::from_utf8_lossy(&o.stdout).to_string();
+                    let info = DiskInfo::parse(&raw);
+                    DiskInfoResult {
+                        info: Some(info),
+                        error: String::new(),
+                    }
+                }
+                Ok(o) => DiskInfoResult {
+                    info: None,
+                    error: String::from_utf8_lossy(&o.stderr).trim().to_string(),
+                },
+                Err(e) => DiskInfoResult {
+                    info: None,
+                    error: format!("Failed to spawn qemu-img: {e}"),
+                },
+            };
+            *result.lock().unwrap() = Some(res);
+        });
+    }
+
+    fn poll_disk_info_result(&mut self) {
+        let taken = self.disk_info_result.lock().unwrap().take();
+        if taken.is_some() {
+            self.disk_info_running = false;
+        }
+    }
+
     fn poll_qemu_img_result(&mut self) {
         let taken = self.qemu_img_result.lock().unwrap().take();
         let Some(result) = taken else { return };
@@ -625,6 +941,28 @@ impl QemuGui {
                     Some(c) => self.log_push(&format!("QEMU exited with code {c}\n")),
                     None => self.log_push("QEMU terminated by signal\n"),
                 }
+                // Parse stderr for warnings
+                let stderr = self.stderr_buffer.lock().unwrap().clone();
+                if !stderr.is_empty() {
+                    let warnings = classify_stderr(&stderr);
+                    if !warnings.is_empty() {
+                        let log_lines: Vec<String> = warnings
+                            .iter()
+                            .map(|w| {
+                                let sev = match w.severity {
+                                    Severity::Low => "LOW",
+                                    Severity::Medium => "MEDIUM",
+                                    Severity::High => "HIGH",
+                                };
+                                format!("[{sev}] {}\n", w.message)
+                            })
+                            .collect();
+                        self.qemu_warnings = warnings;
+                        for line in log_lines {
+                            self.log_push(&line);
+                        }
+                    }
+                }
             }
             Ok(None) => {}
             Err(e) => {
@@ -650,6 +988,7 @@ impl Drop for QemuGui {
 impl eframe::App for QemuGui {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.poll_qemu_img_result();
+        self.poll_disk_info_result();
         self.poll_child_exit();
 
         let log_width = ui.available_width() * 0.8;
@@ -745,6 +1084,14 @@ impl eframe::App for QemuGui {
                     .changed()
                 {
                     self.error = None;
+                    self.detect_qemu_version();
+                }
+                if !self.qemu_version.is_empty() {
+                    ui.label(
+                        egui::RichText::new(&self.qemu_version)
+                            .color(egui::Color32::GRAY)
+                            .size(11.0),
+                    );
                 }
 
                 ui.horizontal(|ui| {
@@ -757,6 +1104,7 @@ impl eframe::App for QemuGui {
                         {
                             self.config.disk_path = path.display().to_string();
                             self.error = None;
+                            self.run_qemu_img_info();
                         }
                     }
                     if ui.button("Create QCOW2...").clicked() {
@@ -768,6 +1116,38 @@ impl eframe::App for QemuGui {
                     .changed()
                 {
                     self.error = None;
+                    self.run_qemu_img_info();
+                }
+
+                if let Some(ref res) = *self.disk_info_result.lock().unwrap() {
+                    if let Some(ref info) = res.info {
+                        egui::CollapsingHeader::new("Disk Info")
+                            .default_open(false)
+                            .show(ui, |ui| {
+                                ui.label(format!("Format: {}", info.format));
+                                ui.label(format!("Virtual size: {:.1} GiB", info.virtual_size_gb));
+                                ui.label(format!("Actual size: {:.0} KiB", info.actual_size_kb));
+                                if let Some(ref bf) = info.backing_file {
+                                    ui.label(format!("Backing file: {bf}"));
+                                }
+                                if !info.snapshots.is_empty() {
+                                    ui.label(format!("Snapshots: {}", info.snapshots.join(", ")));
+                                }
+                            });
+                        // Warn if disk is suspiciously sparse
+                        if info.virtual_size_gb > 1.0 && info.actual_size_kb < 1024.0 {
+                            ui.colored_label(egui::Color32::YELLOW,
+                                "Warning: actual disk size is very small relative to virtual size.\n\
+                                 This may indicate:\n\
+                                 • Empty / uninitialized image\n\
+                                 • Missing backing file\n\
+                                 • Wrong image selected");
+                        }
+                    } else if !res.error.is_empty() {
+                        ui.colored_label(egui::Color32::RED, &res.error);
+                    }
+                } else if self.disk_info_running {
+                    ui.label(egui::RichText::new("Checking disk...").color(egui::Color32::GRAY).size(11.0));
                 }
 
                 ui.horizontal(|ui| {
@@ -833,6 +1213,30 @@ impl eframe::App for QemuGui {
                     ui.colored_label(egui::Color32::RED, err.as_str());
                 }
 
+                if !self.qemu_warnings.is_empty() {
+                    let has_high = self.qemu_warnings.iter().any(|w| w.severity == Severity::High);
+                    egui::CollapsingHeader::new(format!("Warnings ({})", self.qemu_warnings.len()))
+                        .default_open(has_high)
+                        .show(ui, |ui| {
+                            for w in &self.qemu_warnings {
+                                let color = match w.severity {
+                                    Severity::Low => egui::Color32::GRAY,
+                                    Severity::Medium => egui::Color32::YELLOW,
+                                    Severity::High => egui::Color32::RED,
+                                };
+                                ui.colored_label(color, &w.message);
+                            }
+                            if has_high {
+                                ui.separator();
+                                ui.label("Troubleshooting suggestions:");
+                                ui.label("  • Verify firmware type (BIOS vs UEFI mismatch?)");
+                                ui.label("  • Check QCOW2 backing files");
+                                ui.label("  • Open UEFI shell and inspect EFI partitions");
+                                ui.label("  • Verify disk image has contents");
+                            }
+                        });
+                }
+
                 egui::CollapsingHeader::new("Machine")
                     .default_open(false)
                     .show(ui, |ui| {
@@ -846,10 +1250,27 @@ impl eframe::App for QemuGui {
                                 });
                         });
                         ui.horizontal(|ui| {
-                            ui.label("CPU model:");
-                            ui.text_edit_singleline(&mut self.config.cpu_model)
-                                .on_hover_text("Common: host, max, qemu64, SandyBridge, Haswell, Skylake, EPYC");
+                            ui.label("CPU preset:");
+                            egui::ComboBox::from_id_salt("cpu_preset")
+                                .selected_text(self.config.cpu_preset.as_str())
+                                .show_ui(ui, |ui| {
+                                    ui.selectable_value(&mut self.config.cpu_preset, CpuPreset::Host, "host (passthrough)");
+                                    ui.selectable_value(&mut self.config.cpu_preset, CpuPreset::Max, "max");
+                                    ui.selectable_value(&mut self.config.cpu_preset, CpuPreset::Qemu64, "qemu64 (safe)");
+                                    ui.selectable_value(&mut self.config.cpu_preset, CpuPreset::Custom, "custom");
+                                });
                         });
+                        if self.config.cpu_preset == CpuPreset::Custom {
+                            ui.horizontal(|ui| {
+                                ui.label("Custom CPU model:");
+                                ui.text_edit_singleline(&mut self.config.cpu_model)
+                                    .on_hover_text("e.g. SandyBridge, Haswell, Skylake, EPYC");
+                            });
+                        }
+                        if self.config.accel == AccelKind::Whpx && self.config.cpu_preset == CpuPreset::Host {
+                            ui.colored_label(egui::Color32::YELLOW,
+                                "host CPU passthrough may cause instability under WHPX; consider qemu64 or max.");
+                        }
                         ui.horizontal(|ui| {
                             ui.label("Accelerator:");
                             egui::ComboBox::from_id_salt("accel")
@@ -890,7 +1311,57 @@ impl eframe::App for QemuGui {
                                     ui.selectable_value(&mut self.config.dump_guest_core, OnOff::Off, "off");
                                 });
                         });
+                        ui.separator();
+                        ui.horizontal(|ui| {
+                            ui.label("Firmware:");
+                            egui::ComboBox::from_id_salt("firmware")
+                                .selected_text(self.config.firmware.as_str())
+                                .show_ui(ui, |ui| {
+                                    ui.selectable_value(&mut self.config.firmware, FirmwareType::SeaBios, "SeaBIOS");
+                                    ui.selectable_value(&mut self.config.firmware, FirmwareType::Edk2, "UEFI (EDK2)");
+                                });
+                        });
+                        if self.config.firmware == FirmwareType::Edk2 {
+                            ui.horizontal(|ui| {
+                                ui.label("UEFI firmware:");
+                                if ui.button("Browse...").clicked() {
+                                    if let Some(path) = rfd::FileDialog::new()
+                                        .add_filter("UEFI firmware", &["fd"])
+                                        .set_title("Select EDK2 UEFI Firmware")
+                                        .pick_file()
+                                    {
+                                        self.config.uefi_path = path.display().to_string();
+                                    }
+                                }
+                                if self.config.uefi_path.trim().is_empty() {
+                                    if let Some(detected) = self.auto_detect_uefi_path() {
+                                        if ui.button("Detect").clicked() {
+                                            self.config.uefi_path = detected;
+                                        }
+                                    }
+                                }
+                            });
+                            ui.text_edit_singleline(&mut self.config.uefi_path)
+                                .on_hover_text("Path to edk2-x86_64-code.fd, typically in <qemu>/share/");
+                        }
+                        if let Some(ref warn) = self.firmware_warning() {
+                            ui.colored_label(egui::Color32::YELLOW, warn);
+                        }
                     });
+
+                // Command preview
+                if self.validate_basic().is_ok() {
+                    let preview_args = self.build_args(false);
+                    egui::CollapsingHeader::new("Preview QEMU Command")
+                        .default_open(false)
+                        .show(ui, |ui| {
+                            ui.label(
+                                egui::RichText::new(format!("{} {}", self.config.qemu_path, preview_args.join(" ")))
+                                    .text_style(egui::TextStyle::Monospace)
+                                    .size(11.0),
+                            );
+                        });
+                }
 
                 egui::CollapsingHeader::new("Storage")
                     .default_open(false)
@@ -981,6 +1452,10 @@ impl eframe::App for QemuGui {
                                     ui.selectable_value(&mut self.config.display_gl, OnOff::On, "on");
                                 });
                         });
+                        if self.config.accel == AccelKind::Whpx && self.config.display_gl == OnOff::On {
+                            ui.colored_label(egui::Color32::YELLOW,
+                                "WHPX + GL acceleration may cause display issues; consider gl=off.");
+                        }
                         // -- Monitor resolution --
                         const PRESETS: &[(&str, u32, u32)] = &[
                             ("Auto (default)", 0, 0),
